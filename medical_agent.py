@@ -37,14 +37,20 @@ st.title("🩺 Medical Coding Assistant")
 st.caption("Process patient discharge summaries to extract ICD-10 and CPT codes and chat about diagnosis questions")
 
 # --- API Key Configuration ---
-GOOGLE_API_KEY = "AIzaSyC2p0YGIHruk5Tth-sGS4BMvr4K6_pJNH8"# Replace with actual key flash key
+GOOGLE_API_KEY = "AIzaSyC2p0YGIHruk5Tth-sGS4BMvr4K6_pJNH8"  # Replace with actual key flash key
 # GOOGLE_API_KEY = "AIzaSyCUjKDouVFsVOvYlRUge7JfVHDQCPfHXiI" # Pro Key
 os.environ["GOOGLE_API_KEY"] = GOOGLE_API_KEY
 os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "False"
 
 # --- Model Constants ---
-MODEL_GEMINI_FLASH = "gemini-1.5-flash"
-# MODEL_GEMINI_FLASH = "gemini-2.5-pro-exp-03-25"
+MODEL_OPTIONS = {
+    "Gemini 1.5 Flash": "gemini-1.5-flash",
+    "Gemini 2.5 Pro": "gemini-2.5-pro-exp-03-25"
+}
+
+# --- Session State for Selected Model ---
+if "selected_model" not in st.session_state:
+    st.session_state.selected_model = "Gemini 1.5 Flash"
 
 # --- Session State for Agent Configurations ---
 if "agent_configs" not in st.session_state:
@@ -153,54 +159,54 @@ def extract_cpt_codes(discharge_summary: str, tool_context: ToolContext) -> dict
 
 # --- Agent Definitions ---
 @st.cache_resource
-def create_icd_agent():
+def create_icd_agent(model_name):
     """Creates the ICD-10 Coding Specialist Agent."""
-    print("--- DEBUG: Creating ICD-10 agent ---")
+    print(f"--- DEBUG: Creating ICD-10 agent with model: {model_name} ---")
     try:
         instruction = st.session_state.agent_configs["icd"]["instruction"]
         agent = Agent(
-            model=MODEL_GEMINI_FLASH,
+            model=model_name,
             name="icd_agent",
             instruction=instruction,
             description="Specialist in extracting ICD-10 diagnosis codes from medical discharge summaries.",
             # No specific tools needed for this specialist agent
         )
-        print(f"--- DEBUG: icd_agent created using model: {MODEL_GEMINI_FLASH} ---")
+        print(f"--- DEBUG: icd_agent created using model: {model_name} ---")
         return agent
     except Exception as e:
         st.error(f"Error creating ICD Agent: {e}")
         st.stop()
 
 @st.cache_resource
-def create_cpt_agent():
+def create_cpt_agent(model_name):
     """Creates the CPT Coding Specialist Agent."""
-    print("--- DEBUG: Creating CPT agent ---")
+    print(f"--- DEBUG: Creating CPT agent with model: {model_name} ---")
     try:
         instruction = st.session_state.agent_configs["cpt"]["instruction"]
         agent = Agent(
-            model=MODEL_GEMINI_FLASH,
+            model=model_name,
             name="cpt_agent",
             instruction=instruction,
             description="Specialist in extracting CPT procedure codes from medical discharge summaries.",
             # No specific tools needed for this specialist agent
         )  
-        print(f"--- DEBUG: cpt_agent created using model: {MODEL_GEMINI_FLASH} ---")
+        print(f"--- DEBUG: cpt_agent created using model: {model_name} ---")
         return agent
     except Exception as e:
         st.error(f"Error creating CPT Agent: {e}")
         st.stop()
 
 @st.cache_resource
-def create_medical_agent(_icd_agent, _cpt_agent):
+def create_medical_agent(_icd_agent, _cpt_agent, model_name):
     """Creates the Root Medical Agent which uses other agents as tools."""
-    print("--- DEBUG: Creating root medical agent ---")
+    print(f"--- DEBUG: Creating root medical agent with model: {model_name} ---")
     if not _icd_agent or not _cpt_agent:
         st.error("Cannot create Medical Agent, one or more specialist agents are not available.")
         st.stop()
     try:
         instruction = st.session_state.agent_configs["medical"]["instruction"]
         agent = Agent(
-            model=MODEL_GEMINI_FLASH,
+            model=model_name,
             name="medical_agent",
             description="Medical coding agent that extracts both ICD-10 and CPT codes from discharge summaries.",
             instruction=instruction,
@@ -218,30 +224,118 @@ def create_medical_agent(_icd_agent, _cpt_agent):
         st.stop()
 
 @st.cache_resource
-def create_clinical_advisor_agent():
+def create_clinical_advisor_agent(model_name):
     """Creates the Clinical Advisor Agent to answer medical questions."""
-    print("--- DEBUG: Creating clinical advisor agent ---")
+    print(f"--- DEBUG: Creating clinical advisor agent with model: {model_name} ---")
     try:
         instruction = st.session_state.agent_configs["clinical_advisor"]["instruction"]
         agent = Agent(
-            model=MODEL_GEMINI_FLASH,
+            model=model_name,
             name="clinical_advisor_agent",
             instruction=instruction,
             description="Medical advisor that answers questions about diagnoses and procedures.",
             # No specific tools needed for this advisor agent
             output_key="clinical_advisor_response",
         )
-        print(f"--- DEBUG: clinical_advisor_agent created using model: {MODEL_GEMINI_FLASH} ---")
+        print(f"--- DEBUG: clinical_advisor_agent created using model: {model_name} ---")
         return agent
     except Exception as e:
         st.error(f"Error creating Clinical Advisor Agent: {e}")
         st.stop()
 
-# --- Create agent instances ---
-icd_agent = create_icd_agent()
-cpt_agent = create_cpt_agent()
-root_medical_agent = create_medical_agent(icd_agent, cpt_agent)
-clinical_advisor_agent = create_clinical_advisor_agent()
+# --- Sidebar Configuration UI ---
+st.sidebar.markdown("---")
+st.sidebar.header("⚙️ Configuration")
+
+# Add model selection dropdown
+st.sidebar.subheader("Model Selection")
+selected_model_name = st.sidebar.selectbox(
+    "Choose Gemini Model",
+    options=list(MODEL_OPTIONS.keys()),
+    index=0 if st.session_state.selected_model == "Gemini 1.5 Flash" else 1,
+    key="model_selector"
+)
+st.session_state.selected_model = selected_model_name
+model_id = MODEL_OPTIONS[selected_model_name]
+
+# Display model information
+model_info = {
+    "Gemini 1.5 Flash": "Optimized for speed and efficiency. Good for most medical coding tasks.",
+    "Gemini 2.5 Pro": "More powerful but slower. Better for complex or ambiguous medical cases."
+}
+st.sidebar.info(model_info[selected_model_name])
+
+# Add mode selection buttons
+st.sidebar.subheader("Application Mode")
+col1, col2 = st.sidebar.columns(2)
+with col1:
+    if st.button("Code Extraction", 
+                 type="primary" if st.session_state.app_mode == "code_extraction" else "secondary",
+                 use_container_width=True):
+        st.session_state.app_mode = "code_extraction"
+        st.rerun()
+        
+with col2:
+    if st.button("Chat Advisor", 
+                 type="primary" if st.session_state.app_mode == "chat" else "secondary",
+                 use_container_width=True):
+        if st.session_state.extracted_codes is None:
+            st.sidebar.warning("Please extract codes first before using Chat Advisor")
+        else:
+            st.session_state.app_mode = "chat"
+            st.rerun()
+
+# --- Create agent instances based on selected model ---
+# Get the actual model ID from the selection
+current_model_id = MODEL_OPTIONS[st.session_state.selected_model]
+
+# Create agents with the selected model
+icd_agent = create_icd_agent(current_model_id)
+cpt_agent = create_cpt_agent(current_model_id)
+root_medical_agent = create_medical_agent(icd_agent, cpt_agent, current_model_id)
+clinical_advisor_agent = create_clinical_advisor_agent(current_model_id)
+
+# Button to apply changes and reset chat
+st.sidebar.markdown("---")
+st.sidebar.info("Modify settings below and click Apply to rebuild agents.")
+if st.sidebar.button("Apply Changes & Reset Chat", key="apply_changes"):
+    create_icd_agent.clear()
+    create_cpt_agent.clear()
+    create_medical_agent.clear()
+    create_clinical_advisor_agent.clear()
+    initialize_adk_infra.clear()
+    st.session_state.messages = []
+    st.session_state.chat_messages = []
+    st.session_state.extracted_codes = None
+    st.sidebar.success("Configuration applied! Agents rebuilt.")
+    st.rerun()
+
+# Expanders for editing configurations
+with st.sidebar.expander("Agent Instructions", expanded=False):
+    st.session_state.agent_configs["medical"]["instruction"] = st.text_area(
+        "Medical Agent (Root) Instruction",
+        value=st.session_state.agent_configs["medical"]["instruction"],
+        height=200,
+        key="medical_instruction_input"
+    )
+    st.session_state.agent_configs["icd"]["instruction"] = st.text_area(
+        "ICD Agent Instruction",
+        value=st.session_state.agent_configs["icd"]["instruction"],
+        height=150,
+        key="icd_instruction_input"
+    )
+    st.session_state.agent_configs["cpt"]["instruction"] = st.text_area(
+        "CPT Agent Instruction",
+        value=st.session_state.agent_configs["cpt"]["instruction"],
+        height=150,
+        key="cpt_instruction_input"
+    )
+    st.session_state.agent_configs["clinical_advisor"]["instruction"] = st.text_area(
+        "Clinical Advisor Instruction",
+        value=st.session_state.agent_configs["clinical_advisor"]["instruction"],
+        height=150,
+        key="clinical_advisor_instruction_input"
+    )
 
 # --- Initialize ADK Runner and Session Service ---
 @st.cache_resource
@@ -311,72 +405,6 @@ app_name = adk_infra["app_name"]
 user_id = adk_infra["user_id"]
 session_id = adk_infra["session_id"]
 chat_session_id = adk_infra["chat_session_id"]
-
-# --- Sidebar Configuration UI ---
-st.sidebar.markdown("---")
-st.sidebar.header("⚙️ Configuration")
-
-# Add mode selection buttons
-st.sidebar.subheader("Application Mode")
-col1, col2 = st.sidebar.columns(2)
-with col1:
-    if st.button("Code Extraction", 
-                 type="primary" if st.session_state.app_mode == "code_extraction" else "secondary",
-                 use_container_width=True):
-        st.session_state.app_mode = "code_extraction"
-        st.rerun()
-        
-with col2:
-    if st.button("Chat Advisor", 
-                 type="primary" if st.session_state.app_mode == "chat" else "secondary",
-                 use_container_width=True):
-        if st.session_state.extracted_codes is None:
-            st.sidebar.warning("Please extract codes first before using Chat Advisor")
-        else:
-            st.session_state.app_mode = "chat"
-            st.rerun()
-
-# Button to apply changes and reset chat
-st.sidebar.markdown("---")
-st.sidebar.info("Modify settings below and click Apply to rebuild agents.")
-if st.sidebar.button("Apply Changes & Reset Chat", key="apply_changes"):
-    create_icd_agent.clear()
-    create_cpt_agent.clear()
-    create_medical_agent.clear()
-    create_clinical_advisor_agent.clear()
-    initialize_adk_infra.clear()
-    st.session_state.messages = []
-    st.session_state.chat_messages = []
-    st.session_state.extracted_codes = None
-    st.sidebar.success("Configuration applied! Agents rebuilt.")
-    st.rerun()
-
-# Expanders for editing configurations
-with st.sidebar.expander("Agent Instructions", expanded=False):
-    st.session_state.agent_configs["medical"]["instruction"] = st.text_area(
-        "Medical Agent (Root) Instruction",
-        value=st.session_state.agent_configs["medical"]["instruction"],
-        height=200,
-        key="medical_instruction_input"
-    )
-    st.session_state.agent_configs["icd"]["instruction"] = st.text_area(
-        "ICD Agent Instruction",
-        value=st.session_state.agent_configs["icd"]["instruction"],
-        height=150,
-        key="icd_instruction_input"
-    )
-    st.session_state.agent_configs["cpt"]["instruction"] = st.text_area(
-        "CPT Agent Instruction",
-        value=st.session_state.agent_configs["cpt"]["instruction"],
-        height=150,
-        key="cpt_instruction_input"
-    )
-    st.session_state.agent_configs["clinical_advisor"]["instruction"] = st.text_area(
-        "Clinical Advisor Instruction",
-        value=st.session_state.agent_configs["clinical_advisor"]["instruction"],
-        height=150,
-        key="clinical_advisor_instruction_input"
-    )
 
 # --- Chat History Initialization ---
 if "messages" not in st.session_state:
@@ -481,6 +509,9 @@ if st.session_state.app_mode == "code_extraction":
         placeholder="Paste the patient discharge summary here..."
     )
     
+    # Display selected model information
+    st.info(f"Using {st.session_state.selected_model} ({MODEL_OPTIONS[st.session_state.selected_model]}) model for processing")
+    
     # Process button
     if st.button("Process Discharge Summary", type="primary"):
         if not discharge_input or len(discharge_input.strip()) < 50:
@@ -495,7 +526,7 @@ if st.session_state.app_mode == "code_extraction":
                 st.markdown("**DISCHARGE SUMMARY:**\n\n" + discharge_input)
     
             # Show spinner while processing
-            with st.spinner("Analyzing discharge summary for medical codes..."):
+            with st.spinner(f"Analyzing discharge summary with {st.session_state.selected_model}..."):
                 response_text, agent_name = asyncio.run(get_agent_response(discharge_input, "medical"))
                 
                 # Store the extracted codes
@@ -530,6 +561,9 @@ elif st.session_state.app_mode == "chat":
     # Title for the chat section
     st.subheader("💬 Ask Questions About The Diagnosis")
     
+    # Display current model
+    st.info(f"Using {st.session_state.selected_model} ({MODEL_OPTIONS[st.session_state.selected_model]}) model for chat")
+    
     # Display chat history
     for message in st.session_state.chat_messages:
         with st.chat_message(message["role"]):
@@ -553,7 +587,7 @@ elif st.session_state.app_mode == "chat":
         
         # Get response from the clinical advisor agent
         with st.chat_message("assistant"):
-            with st.spinner("Thinking..."):
+            with st.spinner(f"Thinking with {st.session_state.selected_model}..."):
                 response, agent_name = asyncio.run(get_agent_response(context, "advisor"))
                 st.markdown(response)
                 
@@ -576,6 +610,7 @@ try:
         state_dict = current_adk_session.state
         discharge_summary_preview = state_dict.get('last_discharge_summary', '')[:50] + "..." if state_dict.get('last_discharge_summary', '') else 'N/A'
         st.sidebar.write(f"- Last Summary: `{discharge_summary_preview}`")
+        st.sidebar.write(f"- Active Model: `{st.session_state.selected_model}`")
         
         # Show detailed state
         with st.sidebar.expander("Complete Session State", expanded=False):
