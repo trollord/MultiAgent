@@ -37,12 +37,14 @@ st.title("🩺 Medical Coding Assistant")
 st.caption("Process patient discharge summaries to extract ICD-10 and CPT codes")
 
 # --- API Key Configuration ---
-GOOGLE_API_KEY = "AIzaSyC2p0YGIHruk5Tth-sGS4BMvr4K6_pJNH8"# Replace with actual key
+# GOOGLE_API_KEY = "AIzaSyC2p0YGIHruk5Tth-sGS4BMvr4K6_pJNH8"# Replace with actual key flash key
+GOOGLE_API_KEY = "AIzaSyCUjKDouVFsVOvYlRUge7JfVHDQCPfHXiI" # Pro Key
 os.environ["GOOGLE_API_KEY"] = GOOGLE_API_KEY
 os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "False"
 
 # --- Model Constants ---
-MODEL_GEMINI_FLASH = "gemini-1.5-flash"
+# MODEL_GEMINI_FLASH = "gemini-1.5-flash"
+MODEL_GEMINI_FLASH = "gemini-2.5-pro-exp-03-25"
 
 # --- Session State for Agent Configurations ---
 if "agent_configs" not in st.session_state:
@@ -55,6 +57,7 @@ if "agent_configs" not in st.session_state:
                 "1. First call the 'icd_agent' tool to identify all relevant ICD-10 diagnosis codes "
                 "2. Then call the 'cpt_agent' tool to identify all relevant CPT procedure codes "
                 "3. Finally, compile the results from both agents into a well-formatted summary "
+                "4. The codes should be followed by their descriptions and the relevant lines from the discharge summary "
                 "Your output should clearly separate the diagnosis codes from the procedure codes. "
                 "Do not attempt to generate codes yourself - you MUST use the specialized agent tools."
             )
@@ -67,9 +70,10 @@ if "agent_configs" not in st.session_state:
                 "1. Carefully identify all medical conditions, diseases, and diagnoses mentioned "
                 "2. For each identified condition, provide the most specific ICD-10 code available "
                 "3. Include both the code (e.g., 'E11.9') and its description (e.g., 'Type 2 diabetes mellitus without complications') "
-                "4. List them in order of primary diagnosis followed by secondary diagnoses "
-                "5. Include supporting evidence from the text for each assigned code "
-                "6. If the information is insufficient to determine a specific code, note this and use the "
+                "4. Inlcude the line from the discharge summary that supports the code assignment "
+                "5. List them in order of primary diagnosis followed by secondary diagnoses "
+                "6. Include supporting evidence from the text for each assigned code "
+                "7. If the information is insufficient to determine a specific code, note this and use the "
                 "   appropriate 'unspecified' code when necessary "
                 "Always maintain clinical accuracy and coding standards in your responses."
             )
