@@ -34,17 +34,17 @@ logging.basicConfig(level=logging.ERROR)
 # --- Streamlit Page Setup ---
 st.set_page_config(page_title="Medical Coding Assistant", layout="wide")
 st.title("🩺 Medical Coding Assistant")
-st.caption("Process patient discharge summaries to extract ICD-10 and CPT codes")
+st.caption("Process patient discharge summaries to extract ICD-10 and CPT codes and chat about diagnosis questions")
 
 # --- API Key Configuration ---
-# GOOGLE_API_KEY = "AIzaSyC2p0YGIHruk5Tth-sGS4BMvr4K6_pJNH8"# Replace with actual key flash key
-GOOGLE_API_KEY = "AIzaSyCUjKDouVFsVOvYlRUge7JfVHDQCPfHXiI" # Pro Key
+GOOGLE_API_KEY = "AIzaSyC2p0YGIHruk5Tth-sGS4BMvr4K6_pJNH8"# Replace with actual key flash key
+# GOOGLE_API_KEY = "AIzaSyCUjKDouVFsVOvYlRUge7JfVHDQCPfHXiI" # Pro Key
 os.environ["GOOGLE_API_KEY"] = GOOGLE_API_KEY
 os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "False"
 
 # --- Model Constants ---
-# MODEL_GEMINI_FLASH = "gemini-1.5-flash"
-MODEL_GEMINI_FLASH = "gemini-2.5-pro-exp-03-25"
+MODEL_GEMINI_FLASH = "gemini-1.5-flash"
+# MODEL_GEMINI_FLASH = "gemini-2.5-pro-exp-03-25"
 
 # --- Session State for Agent Configurations ---
 if "agent_configs" not in st.session_state:
@@ -92,8 +92,35 @@ if "agent_configs" not in st.session_state:
                 "7. If the information is insufficient to determine a specific code, note this limitation "
                 "Always maintain clinical accuracy and coding standards in your responses."
             )
+        },
+        "clinical_advisor": {
+            "instruction": (
+                "You are the Clinical Medical Advisor. Your role is to answer questions and resolve doubts "
+                "regarding medical diagnoses, procedures, treatments, and coding. "
+                "When responding to queries: "
+                "1. Use your medical knowledge to provide accurate, evidence-based information "
+                "2. Explain medical terms and concepts in clear, understandable language "
+                "3. Provide context around diagnoses and procedures when needed "
+                "4. Clarify relationships between conditions, symptoms, and treatments "
+                "5. When appropriate, explain the reasoning behind specific code assignments "
+                "6. If you don't have enough information to answer confidently, acknowledge this limitation "
+                "7. Always maintain a professional, educational tone suitable for healthcare professionals "
+                "8. Reference the latest clinical guidelines when applicable "
+                "You have access to the discharge summary and the extracted codes from previous agents. "
+                "Use this context to provide more relevant and specific answers."
+            )
         }
     }
+
+# --- Application State ---
+if "app_mode" not in st.session_state:
+    st.session_state.app_mode = "code_extraction"  # Modes: "code_extraction" or "chat"
+
+if "extracted_codes" not in st.session_state:
+    st.session_state.extracted_codes = None
+
+if "current_discharge_summary" not in st.session_state:
+    st.session_state.current_discharge_summary = ""
 
 # --- Tool Definitions ---
 def extract_icd_codes(discharge_summary: str, tool_context: ToolContext) -> dict:
@@ -190,17 +217,38 @@ def create_medical_agent(_icd_agent, _cpt_agent):
         st.error(f"Error creating Medical Agent: {e}")
         st.stop()
 
+@st.cache_resource
+def create_clinical_advisor_agent():
+    """Creates the Clinical Advisor Agent to answer medical questions."""
+    print("--- DEBUG: Creating clinical advisor agent ---")
+    try:
+        instruction = st.session_state.agent_configs["clinical_advisor"]["instruction"]
+        agent = Agent(
+            model=MODEL_GEMINI_FLASH,
+            name="clinical_advisor_agent",
+            instruction=instruction,
+            description="Medical advisor that answers questions about diagnoses and procedures.",
+            # No specific tools needed for this advisor agent
+            output_key="clinical_advisor_response",
+        )
+        print(f"--- DEBUG: clinical_advisor_agent created using model: {MODEL_GEMINI_FLASH} ---")
+        return agent
+    except Exception as e:
+        st.error(f"Error creating Clinical Advisor Agent: {e}")
+        st.stop()
+
 # --- Create agent instances ---
 icd_agent = create_icd_agent()
 cpt_agent = create_cpt_agent()
 root_medical_agent = create_medical_agent(icd_agent, cpt_agent)
+clinical_advisor_agent = create_clinical_advisor_agent()
 
 # --- Initialize ADK Runner and Session Service ---
 @st.cache_resource
-def initialize_adk_infra(_root_agent):
+def initialize_adk_infra(_root_agent, _advisor_agent):
     """Initializes ADK Runner and Session Service."""
-    if not _root_agent:
-        st.error("Cannot initialize ADK Infra, Root Agent not available.")
+    if not _root_agent or not _advisor_agent:
+        st.error("Cannot initialize ADK Infra, Root Agent or Advisor Agent not available.")
         st.stop()
 
     # Use a simple in-memory session service
@@ -210,51 +258,96 @@ def initialize_adk_infra(_root_agent):
     app_name = "medical_coding_assistant"
     user_id = "streamlit_user_medical"
     session_id = "streamlit_session_medical"
-    initial_state = {"last_discharge_summary": ""}
+    chat_session_id = "streamlit_chat_session_medical"
+    
+    initial_state = {
+        "last_discharge_summary": "",
+        "extracted_codes": "",
+        "conversation_history": []
+    }
 
     try:
-        # Create the initial session
+        # Create the initial session for code extraction
         adk_session = session_service.create_session(
             app_name=app_name, user_id=user_id, session_id=session_id, state=initial_state
         )
-        st.sidebar.success("🔑 ADK Session created successfully.")
+        
+        # Create a separate session for clinical advisor chat
+        chat_adk_session = session_service.create_session(
+            app_name=app_name, user_id=user_id, session_id=chat_session_id, state=initial_state
+        )
+        
+        st.sidebar.success("🔑 ADK Sessions created successfully.")
     except Exception as e:
         st.error(f"Error creating ADK session: {e}")
         st.stop()
 
     try:
-        # Create the Runner
-        runner = Runner(agent=_root_agent, app_name=app_name, session_service=session_service)
-        st.sidebar.success("✅ ADK Runner initialized successfully.")
+        # Create the Runners
+        medical_runner = Runner(agent=_root_agent, app_name=app_name, session_service=session_service)
+        advisor_runner = Runner(agent=_advisor_agent, app_name=app_name, session_service=session_service)
+        
+        st.sidebar.success("✅ ADK Runners initialized successfully.")
         # Return components
         return {
-            "runner": runner, "session_service": session_service,
-            "app_name": app_name, "user_id": user_id, "session_id": session_id
+            "medical_runner": medical_runner, 
+            "advisor_runner": advisor_runner,
+            "session_service": session_service,
+            "app_name": app_name, 
+            "user_id": user_id, 
+            "session_id": session_id,
+            "chat_session_id": chat_session_id
         }
     except Exception as e:
-        st.error(f"Error creating ADK Runner: {e}")
+        st.error(f"Error creating ADK Runners: {e}")
         st.stop()
 
 # --- Get ADK infrastructure components ---
-adk_infra = initialize_adk_infra(root_medical_agent)
-runner = adk_infra["runner"]
+adk_infra = initialize_adk_infra(root_medical_agent, clinical_advisor_agent)
+medical_runner = adk_infra["medical_runner"]
+advisor_runner = adk_infra["advisor_runner"]
 session_service = adk_infra["session_service"]
 app_name = adk_infra["app_name"]
 user_id = adk_infra["user_id"]
 session_id = adk_infra["session_id"]
+chat_session_id = adk_infra["chat_session_id"]
 
 # --- Sidebar Configuration UI ---
 st.sidebar.markdown("---")
 st.sidebar.header("⚙️ Configuration")
 
+# Add mode selection buttons
+st.sidebar.subheader("Application Mode")
+col1, col2 = st.sidebar.columns(2)
+with col1:
+    if st.button("Code Extraction", 
+                 type="primary" if st.session_state.app_mode == "code_extraction" else "secondary",
+                 use_container_width=True):
+        st.session_state.app_mode = "code_extraction"
+        st.rerun()
+        
+with col2:
+    if st.button("Chat Advisor", 
+                 type="primary" if st.session_state.app_mode == "chat" else "secondary",
+                 use_container_width=True):
+        if st.session_state.extracted_codes is None:
+            st.sidebar.warning("Please extract codes first before using Chat Advisor")
+        else:
+            st.session_state.app_mode = "chat"
+            st.rerun()
+
 # Button to apply changes and reset chat
+st.sidebar.markdown("---")
 st.sidebar.info("Modify settings below and click Apply to rebuild agents.")
 if st.sidebar.button("Apply Changes & Reset Chat", key="apply_changes"):
     create_icd_agent.clear()
     create_cpt_agent.clear()
     create_medical_agent.clear()
+    create_clinical_advisor_agent.clear()
     initialize_adk_infra.clear()
     st.session_state.messages = []
+    st.session_state.chat_messages = []
+    st.session_state.extracted_codes = None
     st.sidebar.success("Configuration applied! Agents rebuilt.")
     st.rerun()
 
@@ -278,15 +371,64 @@ with st.sidebar.expander("Agent Instructions", expanded=False):
         height=150,
         key="cpt_instruction_input"
     )
+    st.session_state.agent_configs["clinical_advisor"]["instruction"] = st.text_area(
+        "Clinical Advisor Instruction",
+        value=st.session_state.agent_configs["clinical_advisor"]["instruction"],
+        height=150,
+        key="clinical_advisor_instruction_input"
+    )
 
 # --- Chat History Initialization ---
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# --- Display Chat History ---
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"], unsafe_allow_html=True)
+if "chat_messages" not in st.session_state:
+    st.session_state.chat_messages = []
+
+# --- Agent Interaction Logic ---
+async def get_agent_response(discharge_summary: str, run_type: str = "medical") -> tuple[str, str]:
+    """
+    Sends the discharge summary to the ADK runner and processes the events
+    to extract the final response text and agent name.
+    
+    Args:
+        discharge_summary: The text of the discharge summary
+        run_type: Either "medical" for code extraction or "advisor" for the clinical advisor
+    """
+    # Create the user message content
+    content = genai_types.Content(role='user', parts=[genai_types.Part(text=discharge_summary)])
+
+    # Initialize defaults
+    final_response_text = "Agent did not produce a final response."
+    final_response_author = "system"
+
+    try:
+        # Determine which runner and session to use
+        runner = medical_runner if run_type == "medical" else advisor_runner
+        current_session_id = session_id if run_type == "medical" else chat_session_id
+        
+        # Process events from the runner
+        async for event in runner.run_async(user_id=user_id, session_id=current_session_id, new_message=content):
+            if event.is_final_response():
+                final_response_author = event.author if event.author else "unknown_agent"
+
+                if event.content and event.content.parts:
+                    text_parts = [getattr(part, 'text', '') for part in event.content.parts if hasattr(part, 'text')]
+                    final_response_text = " ".join(filter(None, text_parts))
+                    if not final_response_text:
+                        final_response_text = "(Agent returned empty content)"
+                elif event.error_message:
+                    final_response_text = f"Agent Error: {event.error_message}"
+                break
+    except Exception as e:
+        st.error(f"An error occurred during agent interaction: {e}")
+        final_response_text = f"Sorry, an error occurred: {e}"
+        final_response_author = "system_error"
+
+    if isinstance(final_response_author, str):
+        final_response_author = final_response_author.split('.')[-1]
+
+    return final_response_text, final_response_author
 
 # --- Sample discharge summary for testing ---
 sample_discharge_summary = """
@@ -321,75 +463,102 @@ DISCHARGE PLAN:
 5. Smoking cessation counseling provided
 """
 
-# Add a checkbox to use the sample data
-use_sample = st.checkbox("Use sample discharge summary", value=False)
+# --- CODE EXTRACTION MODE ---
+if st.session_state.app_mode == "code_extraction":
+    # Display chat history for code extraction mode
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"], unsafe_allow_html=True)
+    
+    # Add a checkbox to use the sample data
+    use_sample = st.checkbox("Use sample discharge summary", value=False)
+    
+    # Create a larger text area for discharge summary input
+    discharge_input = st.text_area(
+        "Enter Patient Discharge Summary:", 
+        value=sample_discharge_summary if use_sample else "",
+        height=300,
+        placeholder="Paste the patient discharge summary here..."
+    )
+    
+    # Process button
+    if st.button("Process Discharge Summary", type="primary"):
+        if not discharge_input or len(discharge_input.strip()) < 50:
+            st.warning("Please enter a complete discharge summary (at least 50 characters).")
+        else:
+            # Store the current discharge summary
+            st.session_state.current_discharge_summary = discharge_input
+            
+            # Add user input to history
+            st.session_state.messages.append({"role": "user", "content": "**DISCHARGE SUMMARY:**\n\n" + discharge_input})
+            with st.chat_message("user"):
+                st.markdown("**DISCHARGE SUMMARY:**\n\n" + discharge_input)
+    
+            # Show spinner while processing
+            with st.spinner("Analyzing discharge summary for medical codes..."):
+                response_text, agent_name = asyncio.run(get_agent_response(discharge_input, "medical"))
+                
+                # Store the extracted codes
+                st.session_state.extracted_codes = response_text
+                
+                # Format the response
+                display_response = f"**[{agent_name}]** \n\n{response_text}"
+                
+                # Add to history and display
+                st.session_state.messages.append({"role": "assistant", "content": display_response})
+                with st.chat_message("assistant"):
+                    st.markdown(display_response, unsafe_allow_html=True)
+                
+                # Show a button to switch to chat mode
+                st.success("Code extraction complete! You can now ask questions about these diagnoses and procedures.")
+                if st.button("Switch to Chat Mode"):
+                    st.session_state.app_mode = "chat"
+                    st.rerun()
 
-# --- Agent Interaction Logic ---
-async def get_agent_response(discharge_summary: str) -> tuple[str, str]:
-    """
-    Sends the discharge summary to the ADK runner and processes the events
-    to extract the final response text and agent name.
-    """
-    # Create the user message content
-    content = genai_types.Content(role='user', parts=[genai_types.Part(text=discharge_summary)])
-
-    # Initialize defaults
-    final_response_text = "Agent did not produce a final response."
-    final_response_author = "system"
-
-    try:
-        # Process events from the runner
-        async for event in runner.run_async(user_id=user_id, session_id=session_id, new_message=content):
-            if event.is_final_response():
-                final_response_author = event.author if event.author else "unknown_agent"
-
-                if event.content and event.content.parts:
-                    text_parts = [getattr(part, 'text', '') for part in event.content.parts if hasattr(part, 'text')]
-                    final_response_text = " ".join(filter(None, text_parts))
-                    if not final_response_text:
-                        final_response_text = "(Agent returned empty content)"
-                elif event.error_message:
-                    final_response_text = f"Agent Error: {event.error_message}"
-                break
-    except Exception as e:
-        st.error(f"An error occurred during agent interaction: {e}")
-        final_response_text = f"Sorry, an error occurred: {e}"
-        final_response_author = "system_error"
-
-    if isinstance(final_response_author, str):
-        final_response_author = final_response_author.split('.')[-1]
-
-    return final_response_text, final_response_author
-
-# Create a larger text area for discharge summary input
-discharge_input = st.text_area(
-    "Enter Patient Discharge Summary:", 
-    value=sample_discharge_summary if use_sample else "",
-    height=300,
-    placeholder="Paste the patient discharge summary here..."
-)
-
-# Process button
-if st.button("Process Discharge Summary", type="primary"):
-    if not discharge_input or len(discharge_input.strip()) < 50:
-        st.warning("Please enter a complete discharge summary (at least 50 characters).")
-    else:
-        # Add user input to history
-        st.session_state.messages.append({"role": "user", "content": "**DISCHARGE SUMMARY:**\n\n" + discharge_input})
+# --- CHAT MODE ---
+elif st.session_state.app_mode == "chat":
+    # Add a way to go back to code extraction
+    if st.button("⬅️ Back to Code Extraction"):
+        st.session_state.app_mode = "code_extraction"
+        st.rerun()
+    
+    # Display the extracted codes at the top for reference
+    if st.session_state.extracted_codes:
+        with st.expander("📋 Extracted Medical Codes (Reference)", expanded=False):
+            st.markdown(st.session_state.extracted_codes)
+    
+    # Title for the chat section
+    st.subheader("💬 Ask Questions About The Diagnosis")
+    
+    # Display chat history
+    for message in st.session_state.chat_messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+    
+    # Chat input
+    if prompt := st.chat_input("Ask about the diagnosis, treatments, or codes..."):
+        # Add user message to chat history
+        st.session_state.chat_messages.append({"role": "user", "content": prompt})
+        
+        # Display user message
         with st.chat_message("user"):
-            st.markdown("**DISCHARGE SUMMARY:**\n\n" + discharge_input)
-
-        # Show spinner while processing
-        with st.spinner("Analyzing discharge summary for medical codes..."):
-            response_text, agent_name = asyncio.run(get_agent_response(discharge_input))
-            
-            # Format the response
-            display_response = f"**[{agent_name}]** \n\n{response_text}"
-            
-            # Add to history and display
-            st.session_state.messages.append({"role": "assistant", "content": display_response})
-            with st.chat_message("assistant"):
-                st.markdown(display_response, unsafe_allow_html=True)
+            st.markdown(prompt)
+        
+        # Construct context for the clinical advisor
+        context = (
+            f"DISCHARGE SUMMARY:\n{st.session_state.current_discharge_summary}\n\n"
+            f"EXTRACTED CODES:\n{st.session_state.extracted_codes}\n\n"
+            f"USER QUESTION: {prompt}"
+        )
+        
+        # Get response from the clinical advisor agent
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                response, agent_name = asyncio.run(get_agent_response(context, "advisor"))
+                st.markdown(response)
+                
+                # Add assistant response to chat history
+                st.session_state.chat_messages.append({"role": "assistant", "content": response})
 
 # --- Display Current ADK Session State ---
 st.sidebar.markdown("---")
@@ -398,7 +567,7 @@ try:
     current_adk_session = session_service.get_session(
         app_name=app_name,
         user_id=user_id,
-        session_id=session_id
+        session_id=session_id if st.session_state.app_mode == "code_extraction" else chat_session_id
     )
 
     if current_adk_session:
